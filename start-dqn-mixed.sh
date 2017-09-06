@@ -19,7 +19,5 @@ do
 
         rm -rf model_dist train_* frames
 
-        #wait
-
         sleep 100
 done

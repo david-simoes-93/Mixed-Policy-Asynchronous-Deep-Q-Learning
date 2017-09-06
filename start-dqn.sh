@@ -15,6 +15,8 @@ do
 	    sleep 5
 	done
 
+	wait
+
 	rm -rf asyncdqn/model_dist asyncdqn/train_* asyncdqn/frames
 done
 wait

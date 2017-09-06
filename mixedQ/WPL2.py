@@ -21,10 +21,8 @@ def wpl2(prevstate, nstate, action, reward, Q, PI, learning_rate, future_rewards
             deltaPolicy = 1 - PI[prevstate][a]
         else:
             deltaPolicy = PI[prevstate][a]
-        #deltaPolicy = deltaPolicy / 2 + 0.5  # modification against deterministic bias
 
         rate = eta * difference * deltaPolicy
-        #print(difference, Q[prevstate], eta, difference, deltaPolicy, rate)
         PI[prevstate][a] += rate
 
     projection(PI[prevstate], exploration_rate)
