@@ -23,29 +23,58 @@ from simulator.GymRPS import GymRPS
 from simulator.GymRandomRPS import GymRandomRPS
 
 max_episode_length = 2000
-gamma = .9  # discount rate for advantage estimation and reward discounting
-#Pursuit
-#width = 15  # 84
-#height = 15
-#s_size = width * height  # Observations are greyscale frames of 84 * 84 * 1
-#a_size = 5  # Agent can move Left, Right, up down, or nothing
-# coins
-width = 1  # 84
-height = 1
-s_size = 1  # Observations are greyscale frames of 84 * 84 * 1
-a_size = 2  # Agent can move Left, Right, up down, or nothing
-#randomRPS
-width = 5
-height = 5
-s_size = width*height  # Observations are greyscale frames of 84 * 84 * 1
-a_size = 4  # Agent can move Left, Right, up down, or nothing
+
+regular_pursuit = False
+random_rps = False
+pursuit_oscil = False
+gt = True
+
+# pursuit
+if regular_pursuit:
+    gamma = .99             # discount rate for advantage estimation and reward discounting
+    width = 15              # 84
+    height = 15
+    a_size = 5              # Agent can move Left, Right, up down, or nothing
+    number_of_cell_types = 3
+    learning_rate = 1e-4    # this was 1e-5 as of 02/05/2017
+# random rps
+if random_rps:
+    gamma = .9              # discount rate for advantage estimation and reward discounting
+    width = 5
+    height = 5
+    a_size = 4              # Agent can move Left, Right, up down
+    number_of_cell_types = 1
+    learning_rate = 1e-5
+# pursuit balance test
+if pursuit_oscil:
+    gamma = .99             # discount rate for advantage estimation and reward discounting
+    width = 7               # 84
+    height = 7
+    a_size = 5              # Agent can move Left, Right, up down, or nothing
+    number_of_cell_types = 3
+    learning_rate = 1e-4
+if gt:
+    gamma = .9  # discount rate for advantage estimation and reward discounting
+    width = 1
+    height = 1
+    number_of_cell_types = 1
+    learning_rate = 1e-5
+    game="biased"
+    if game=="biased" or game=="matching_pennies" or game=="tricky":
+        a_size = 2
+    elif game=="rps":
+        a_size = 3
+    elif game=="rrps":
+        a_size = 4
+
+s_size = width * height
+
 load_model = False
 model_path = './model'
 debug = False
 use_lstm = False
 use_conv_layers = False
 save_gifs = False
-number_of_cell_types = 1 #3
 
 parser = argparse.ArgumentParser()
 parser.register("type", "bool", lambda v: v.lower() == "true")
@@ -70,7 +99,7 @@ parser.add_argument(
 parser.add_argument(
     "--alg",
     type=int,
-    default=4,
+    default=1,
     help="Which algorithm it is"
 )
 FLAGS, unparsed = parser.parse_known_args()
@@ -88,8 +117,8 @@ if not os.path.exists('./frames'):
 
 with tf.device("/cpu:0"):
     global_episodes = tf.Variable(0, dtype=tf.int32, name='global_episodes', trainable=False)
-    trainer_predator = tf.train.AdamOptimizer(learning_rate=1e-4)  # todo this was 1e-5 as of 02/05/2017
-    trainer_prey = tf.train.AdamOptimizer(learning_rate=1e-4)  # todo this was 1e-5 as of 02/05/2017
+    trainer_predator = tf.train.AdamOptimizer(learning_rate=learning_rate)
+    trainer_prey = tf.train.AdamOptimizer(learning_rate=learning_rate)
     if FLAGS.alg in [3, 4, 5]:
         master_network_predator = QNetworkPolicy(s_size, a_size, 'global_predator', None, use_conv_layers, use_lstm,
                                                  width, height, number_of_cell_types)  # Generate global network
@@ -108,16 +137,24 @@ with tf.device("/cpu:0"):
     workers = []
     # Create worker classes
     for i in range(FLAGS.num_slaves):
-        if FLAGS.alg in [0, 1, 2, 3, 4, 5]: #todo - we're including alg 0 to have greedy dqn as well
-            workers.append(WorkerRandomRPS(GymRandomRPS(2, width, width, debug), #GymRPS(numberOfActions=a_size), #
-                              i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
-                              width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs,
-                              number_of_predators, number_of_prey, FLAGS.alg))
-        else:
+        if random_rps:
+            workers.append(WorkerRandomRPS(GymRandomRPS(2, width, width, debug),  # GymRPS(numberOfActions=a_size), #
+                                           i, s_size, a_size, trainer_predator, trainer_prey, model_path,
+                                           global_episodes,
+                                           width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs,
+                                           number_of_predators, number_of_prey, FLAGS.alg))
+        if regular_pursuit or pursuit_oscil:
             workers.append(Worker(GymPursuit(number_of_predators, number_of_prey, width, width, debug),
-                          i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
-                          width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs,
-                          number_of_predators, number_of_prey))
+                                  i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
+                                  width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs,
+                                  number_of_predators, number_of_prey))
+        if gt:
+            workers.append(WorkerRPS(GymRPS(game=game),
+                                           i, s_size, a_size, trainer_predator, trainer_prey, model_path,
+                                           global_episodes,
+                                           width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs,
+                                           number_of_predators, number_of_prey, FLAGS.alg))
+
     saver = tf.train.Saver()
 
 with tf.Session() as sess:

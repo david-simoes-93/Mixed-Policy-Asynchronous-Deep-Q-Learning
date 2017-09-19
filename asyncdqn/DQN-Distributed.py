@@ -21,18 +21,53 @@ from simulator.GymRPS import GymRPS
 from simulator.GymRandomRPS import GymRandomRPS
 
 max_episode_length = 2000
-gamma = .9     # discount rate for advantage estimation and reward discounting
-width = 5      # 84
-height = 5     # 84
-s_size = width * height  # Observations are greyscale frames of 84 * 84 * 1
-a_size = 4      # Agent can move Left, Right, up down, or nothing
+
+regular_pursuit = False
+random_rps = False
+pursuit_oscil = False
+gt = True
+
+# pursuit
+if regular_pursuit:
+    gamma = .99             # discount rate for advantage estimation and reward discounting
+    width = 15              # 84
+    height = 15
+    a_size = 5              # Agent can move Left, Right, up down, or nothing
+    number_of_cell_types = 3
+    learning_rate = 1e-4    # this was 1e-5 as of 02/05/2017
+# random rps
+if random_rps:
+    gamma = .9              # discount rate for advantage estimation and reward discounting
+    width = 5
+    height = 5
+    a_size = 4              # Agent can move Left, Right, up down
+    number_of_cell_types = 1
+    learning_rate = 1e-5
+# pursuit balance test
+if pursuit_oscil:
+    gamma = .99             # discount rate for advantage estimation and reward discounting
+    width = 7               # 84
+    height = 7
+    a_size = 5              # Agent can move Left, Right, up down, or nothing
+    number_of_cell_types = 3
+    learning_rate = 1e-4
+if gt:
+    gamma = .9  # discount rate for advantage estimation and reward discounting
+    width = 1
+    height = 1
+    a_size = 2  # Agent can move Left, Right, up down
+    number_of_cell_types = 1
+    learning_rate = 1e-5
+    game = "tricky"
+
+s_size = width * height     # Observations are greyscale frames of 84 * 84 * 1
+
 load_model = False
 model_path = './model_dist'
 debug = False
 use_lstm = False
 use_conv_layers = False
 save_gifs = False
-number_of_cell_types = 1
 
 parser = argparse.ArgumentParser()
 parser.register("type", "bool", lambda v: v.lower() == "true")
@@ -69,7 +104,7 @@ parser.add_argument(
 parser.add_argument(
     "--alg",
     type=int,
-    default=1,
+    default=4,
     help="Which algorithm it is"
 )
 FLAGS, unparsed = parser.parse_known_args()
@@ -95,8 +130,8 @@ if not os.path.exists('./frames'):
 
 with tf.device(tf.train.replica_device_setter(worker_device="/job:a3c/task:%d" % FLAGS.task_index, cluster=cluster)):
     global_episodes = tf.contrib.framework.get_or_create_global_step()
-    trainer_predator = tf.train.AdamOptimizer(learning_rate=1e-4)  # todo this was 1e-5 as of 02/05/2017
-    trainer_prey = tf.train.AdamOptimizer(learning_rate=1e-4)  # todo this was 1e-5 as of 02/05/2017
+    trainer_predator = tf.train.AdamOptimizer(learning_rate=learning_rate)
+    trainer_prey = tf.train.AdamOptimizer(learning_rate=learning_rate)
     if FLAGS.alg in [3, 4, 5]:
         master_network_predator = QNetworkPolicy(s_size, a_size, 'global_predator', None, use_conv_layers, use_lstm,
                                                  width, height, number_of_cell_types)  # Generate global network
@@ -116,7 +151,7 @@ with tf.device(tf.train.replica_device_setter(worker_device="/job:a3c/task:%d" %
     # Master declares worker for all slaves
     for i in range(len(hosts)):
         print("Initializing variables for slave ", i)
-        if FLAGS.alg in [0, 1, 2, 3, 4, 5]: #todo
+        if random_rps:
             if i == FLAGS.task_index:
                 worker = WorkerRandomRPS(GymRandomRPS(2, width, width, debug), #GymRPS(),
                                 i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
@@ -127,7 +162,7 @@ with tf.device(tf.train.replica_device_setter(worker_device="/job:a3c/task:%d" %
                        i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
                        width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs, number_of_predators,
                        number_of_prey, FLAGS.alg)
-        else:
+        if regular_pursuit or pursuit_oscil:
             if i == FLAGS.task_index:
                 worker = Worker(GymPursuit(number_of_predators, number_of_prey, width, width, debug),
                                 i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
@@ -136,6 +171,17 @@ with tf.device(tf.train.replica_device_setter(worker_device="/job:a3c/task:%d" %
                 Worker(GymPursuit(number_of_predators, number_of_prey, width, width, debug),
                        i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
                        width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs, number_of_predators, number_of_prey)
+        if gt:
+            if i == FLAGS.task_index:
+                worker = WorkerRPS(GymRPS(game=game),
+                                i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
+                                width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs,
+                                number_of_predators, number_of_prey, FLAGS.alg)
+            else:
+                WorkerRPS(GymRPS(game=game),
+                       i, s_size, a_size, trainer_predator, trainer_prey, model_path, global_episodes,
+                       width, height, number_of_cell_types, use_lstm, use_conv_layers, save_gifs, number_of_predators,
+                       number_of_prey, FLAGS.alg)
 
 print("Starting session", server.target, FLAGS.task_index)
 hooks=[tf.train.StopAtStepHook(last_step=100000)]

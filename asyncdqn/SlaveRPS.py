@@ -6,8 +6,7 @@ from asyncdqn.QNetworkPolicySlow import QNetworkPolicySlow
 from asyncdqn.Helper import update_target_graph, discount, make_gif, get_empty_loss_arrays
 import numpy as np
 from mixedQ.Projection import projection
-from time import sleep
-import math
+from asyncdqn.GT_Algs import *
 
 
 # Worker class
@@ -36,22 +35,23 @@ class WorkerRPS:
 
         # Create the local copy of the network and the tensorflow op to copy global parameters to local network
         self.type_of_algorithm = type_of_algorithm
-        if type_of_algorithm in [3,4,5]:
+        if type_of_algorithm in [3, 4, 5]:
             self.local_AC_predator = QNetworkPolicy(s_size, a_size, self.name + "_predator", trainer_predator,
                                                     use_conv_layers, use_lstm, width, height, number_of_cell_types)
-            self.local_AC_prey = QNetworkPolicy(s_size, a_size, self.name + "_prey", trainer_prey, use_conv_layers, use_lstm,
-                                                width, height, number_of_cell_types)
-        elif type_of_algorithm in [1,2]:
-            self.local_AC_predator = QNetworkPolicySlow(s_size, a_size, self.name + "_predator", trainer_predator,
-                                                    use_conv_layers, use_lstm, width, height, number_of_cell_types)
-            self.local_AC_prey = QNetworkPolicySlow(s_size, a_size, self.name + "_prey", trainer_prey, use_conv_layers,
+            self.local_AC_prey = QNetworkPolicy(s_size, a_size, self.name + "_prey", trainer_prey, use_conv_layers,
                                                 use_lstm,
                                                 width, height, number_of_cell_types)
+        elif type_of_algorithm in [1, 2]:
+            self.local_AC_predator = QNetworkPolicySlow(s_size, a_size, self.name + "_predator", trainer_predator,
+                                                        use_conv_layers, use_lstm, width, height, number_of_cell_types)
+            self.local_AC_prey = QNetworkPolicySlow(s_size, a_size, self.name + "_prey", trainer_prey, use_conv_layers,
+                                                    use_lstm,
+                                                    width, height, number_of_cell_types)
         else:
             self.local_AC_predator = QNetwork1Step(s_size, a_size, self.name + "_predator", trainer_predator,
-                                                    use_conv_layers, use_lstm, width, height, number_of_cell_types)
+                                                   use_conv_layers, use_lstm, width, height, number_of_cell_types)
             self.local_AC_prey = QNetwork1Step(s_size, a_size, self.name + "_prey", trainer_prey, use_conv_layers,
-                                                use_lstm, width, height, number_of_cell_types)
+                                               use_lstm, width, height, number_of_cell_types)
         self.update_local_ops_predator = update_target_graph('global_predator', self.name + "_predator")
         self.update_local_ops_prey = update_target_graph('global_prey', self.name + "_prey")
 
@@ -110,151 +110,32 @@ class WorkerRPS:
         observations = rollout[:, 0]  # state t
         actions = rollout[:, 1]  # action taken at timestep t
         rewards = rollout[:, 2]  # reward t
-        next_observations = np.vstack(rollout[:, 3])  # state t+1
+        #next_observations = np.vstack(rollout[:, 3])  # state t+1
         terminals = rollout[:, 4]  # whether timestep t was terminal
-
 
         next_max_q = rollout[:, 5]  # the best Q value of state t+1 as calculated by target network
         best_action = rollout[:, 6]
         curr_policy = rollout[:, 7]
-        curr_q = rollout[:, 8] #not from target
+        curr_q = rollout[:, 8]  # not from target
         curr_policy_slow = rollout[:, 9]
 
         target_policy = np.zeros([len(best_action), self.a_size])
         target_policy_slow = np.zeros([len(best_action), self.a_size])
 
-        self.c += 1
-
-        if self.type_of_algorithm == 1:
-            ## WOLF_PHC
-            for index in range(len(best_action)):
-                # update average policy estimate
-                for i in range(self.a_size):
-                    target_policy_slow[index][i] = curr_policy_slow[index][i] + (curr_policy[index][i] - curr_policy_slow[index][i]) / self.c #todo C[prevstate]
-
-                # find out whether winning or losing, and set delta correspondingly
-                sum1 = 0
-                sum2 = 0
-                for i in range(self.a_size):
-                    sum1 += curr_policy[index][i] * curr_q[index][i]
-                    sum2 += target_policy_slow[index][i] * curr_q[index][i]
-                winning = sum1 > sum2
-                if winning:
-                    d = 1/200
-                else:
-                    d = 1/100
-
-                # each subopt action is penalized by at most delta/#(subopt)
-                for a in range(self.a_size):
-                    target_policy[index][a] = curr_policy[index][a]
-
-                for a in range(self.a_size):
-                    if a != best_action[index]:
-                        target_policy[index][a] -= d / (self.a_size - 1)
-                    else:
-                        target_policy[index][a] += d
-
-                    if target_policy[index][a] < 0:
-                        target_policy[index][best_action[index]] += target_policy[index][a]
-                        target_policy[index][a] = 0
-            #"""
-        elif self.type_of_algorithm == 2:
-            ##GIGA_WOLF
-            for index in range(len(best_action)):
-                # Update the agent's strategy, using the stepsize and *POSSIBLE* rewards
-                PI_hat = [0] * self.a_size
-                for a in range(self.a_size):
-                    PI_hat[a] = curr_policy[index][a] + (1/100) * curr_q[index][a]
-
-                # Project this strategy
-                projection(PI_hat, 0)
-
-                # Update the agent's 'z' distribution, using the stepsize and *POSSIBLE* rewards
-                z = [0] * self.a_size
-                for a in range(self.a_size):
-                    z[a] = curr_policy_slow[index][a] + (1/300) * curr_q[index][a]
-
-                # Project this strategy
-                projection(z, 0)
-
-                # Calculate delta using sum of squared differences
-                d_num_A = np.sqrt(((np.array(z) - np.array(curr_policy_slow[index])) ** 2).sum())
-                d_denom_A = np.sqrt(((np.array(z) - np.array(PI_hat)) ** 2).sum())
-                if d_denom_A == 0:
-                    delta_A = 1
-                else:
-                    delta_A = min(1, d_num_A / d_denom_A)
-
-                # Do an update of the agent's strategy
-                for a in range(self.a_size):
-                    target_policy_slow[index][a] = z[a]
-                    target_policy[index][a] = PI_hat[a] + delta_A * (z[a] - PI_hat[a])
-            #"""
-        elif self.type_of_algorithm == 3:
-            ## EMA-QL
-            for index in range(len(best_action)):
-                if actions[index] == best_action[index]:  # does the selected action by Player A equal to the greedy action?
-                    vector_1 = np.zeros(self.a_size)
-                    vector_1[actions[index]] = 1
-                    eta = 1 / 200
-                    # Policy_A = (1 - eta_winning) * Policy_A + eta_winning * vector_1;
-                else:
-                    vector_1 = np.full(self.a_size, 1 / (self.a_size - 1))
-                    vector_1[actions[index]] = 0
-                    eta = 1 / 100
-                    # Policy_A = (1 - eta_losing) * Policy_A + eta_losing * vector_1;
-                #print((1 - eta) * curr_policy[index] + eta * vector_1)
-                target_policy[index] = (1 - eta) * curr_policy[index] + eta * vector_1
-                #projection(target_policy[index], 0.05)
-            #"""
-        elif self.type_of_algorithm == 4:
-            ## WPL
-            for index in range(len(best_action)):
-
-                for a in range(self.a_size):
-                    difference = 0
-
-                    # compute difference between this reward and average reward
-                    for i in range(self.a_size):
-                        difference += curr_q[index][a] - curr_q[index][i]
-                    difference /= self.a_size - 1
-
-                    # scale to sort of normalize the effect of a policy
-                    if difference > 0:
-                        deltaPolicy = 1 - curr_policy[index][a]
-                    else:
-                        deltaPolicy = curr_policy[index][a]
-
-                    rate = 1/100 * difference * deltaPolicy
-                    # print(difference, Q[prevstate], eta, difference, deltaPolicy, rate)
-                    target_policy[index][a] = curr_policy[index][a] + rate
-
-                projection(target_policy[index], 0.05)
-            #"""
-        elif self.type_of_algorithm == 5:
-            ##PGAAPP
-            for index in range(len(best_action)):
-                Value_A = 0
-                for a in range(self.a_size):
-                    Value_A += curr_policy[index][a] * curr_q[index][a]
-
-                delta_hat_A = [0] * self.a_size
-                delta_A = [0] * self.a_size
-                for a in range(self.a_size):
-                    if curr_policy[index][a] == 1:
-                        delta_hat_A[a] = curr_q[index][a] - Value_A
-                    else:
-                        delta_hat_A[a] = (curr_q[index][a] - Value_A) / (1 - curr_policy[index][a])
-
-                    delta_A[a] = delta_hat_A[a] - 1 * abs(delta_hat_A[a]) * curr_policy[index][a]
-                    target_policy[index][a] = curr_policy[index][a] + 1/100 * delta_A[a]
-
-                projection(target_policy[index], 0.05)
-            #"""
+        if self.type_of_algorithm == 1:     # WOLF_PHC
+            self.c += 1
+            target_policy, target_policy_slow = wolf_phc(best_action, self.a_size, curr_policy, curr_policy_slow, self.c, curr_q)
+        elif self.type_of_algorithm == 2:   # GIGA_WOLF
+            target_policy, target_policy_slow = giga_wolf(best_action, self.a_size, curr_policy, curr_policy_slow, curr_q)
+        elif self.type_of_algorithm == 3:   # EMA-QL
+            target_policy = ema_ql(best_action, self.a_size, curr_policy, actions)
+        elif self.type_of_algorithm == 4:   # WPL
+            target_policy = wpl(best_action, self.a_size, curr_policy, curr_q)
+        elif self.type_of_algorithm == 5:   # PGAAPP
+            target_policy = pag_app(best_action, self.a_size, curr_policy, curr_q)
 
         # we get rewards, terminals, prev_screen, next screen, and target network
         discounted_rewards = (1. - terminals) * gamma * next_max_q + rewards
-
 
         # Update the global network using gradients from loss
         # Generate network statistics to periodically save
@@ -280,18 +161,6 @@ class WorkerRPS:
              ac_network.apply_grads],
             feed_dict=feed_dict)
 
-        # print(debug1, target_policy)
-        # print(debug3[0], " ", debug1[0], debug2[0])
-        # v_l, q_value, q_acted, g_n, v_n = 0,0,0,0,0
-
-        """index = len(observations) - 1
-        self.print_screen_formatted(observations[index])
-        print(actions[index], rewards[index], terminals[index])
-        #self.print_screen_formatted(next_observations[index])
-        print(next_max_q[index], discounted_rewards[index])
-        print(v_l, q_value[index], q_acted[index])
-        #input("continue?")"""
-
         return v_l / len(rollout), 0, 0, g_n, v_n
 
     def process(self, screen):
@@ -312,8 +181,7 @@ class WorkerRPS:
 
         if self.use_lstm:
             for pred_index in range(number_of_agents):
-                action_distribution[pred_index], value[pred_index], rnn_state[
-                    pred_index] = sess.run(
+                action_distribution[pred_index], value[pred_index], rnn_state[pred_index] = sess.run(
                     [network.policy, network.value, network.state_out],
                     feed_dict={network.inputs: [previous_screen[pred_index]],
                                network.state_in[0]: rnn_state[pred_index][0],
@@ -342,14 +210,9 @@ class WorkerRPS:
 
         # prev_vals = sess.run(self.local_AC_predator.local_vars)
         while not coord.should_stop():
-            #print("Copying global networks to local networks")
+            # print("Copying global networks to local networks")
             sess.run(self.update_local_ops_predator)
             sess.run(self.update_local_ops_prey)
-
-            """if self.is_chief and episode_count % 100 == 0:
-                sess.run(self.local_AC_predator.assign_op)
-                sess.run(self.local_AC_prey.assign_op)
-                print("Updating target network")"""
 
             episode_buffer_predator = []
             episode_values_predator = []
@@ -369,13 +232,10 @@ class WorkerRPS:
 
             self.env.new_episode()
 
-            batch_size = 25
-            for step in range(batch_size):
+            # Initial state; initialize values for the LSTM network
+            if self.use_lstm:
+                previous_screen_predator, previous_screen_prey = self.env.get_state()
 
-                previous_screen_predator, previous_screen_prey = self.env.get_state()  # .screen_buffer
-                episode_frames.append(self.env.birdseye_observe())
-
-                # Initial state; initialize values for the LSTM network
                 action_predator, action_distribution_predator, value_predator, rnn_state_predator = \
                     self.take_action_from_network(sess, self.local_AC_predator.network, self.number_of_predators,
                                                   previous_screen_predator, action_indexes,
@@ -384,6 +244,14 @@ class WorkerRPS:
                     self.take_action_from_network(sess, self.local_AC_prey.network, self.number_of_prey,
                                                   previous_screen_prey, action_indexes,
                                                   [], [], [])
+            else:
+                action_distribution_predator, value_predator, rnn_state_predator = [], [], []
+                action_distribution_prey, value_prey, rnn_state_prey = [], [], []
+
+            batch_size = 25
+            for step in range(batch_size):
+                previous_screen_predator, previous_screen_prey = self.env.get_state()
+                episode_frames.append(self.env.birdseye_observe())
 
                 # times_measurement = []
                 v_l_prey, p_l_prey, e_l_prey, g_n_prey, v_n_prey = get_empty_loss_arrays(self.number_of_prey)
@@ -398,8 +266,6 @@ class WorkerRPS:
                         self.take_action_from_network(sess, self.local_AC_predator.network, self.number_of_predators,
                                                       previous_screen_predator, action_indexes,
                                                       action_distribution_predator, value_predator, rnn_state_predator)
-                    #print("value ", value_predator)
-                #todo self.env.predator_act(action_predator)
 
                 # act prey
                 if np.random.random() < self.exploration_rate_prey:
@@ -409,24 +275,25 @@ class WorkerRPS:
                         self.take_action_from_network(sess, self.local_AC_prey.network, self.number_of_prey,
                                                       previous_screen_prey, action_indexes,
                                                       action_distribution_prey, value_prey, rnn_state_prey)
-                #todo self.env.prey_act(action_prey)
-                self.env.act([action_predator[0], action_prey[0]]) #todo
+
+                self.env.act([action_predator[0], action_prey[0]])
 
                 # Watch environment
-                #todo current_screen_predator, reward, terminal_predator = self.env.predator_observe()
-                current_screen_predator, _, reward, _ = self.env.observe() #todo
+                current_screen_predator, _, reward, _ = self.env.observe()  # todo
                 reward = np.sum(reward)
                 episode_reward_predator += reward
                 episode_frames.append(self.env.birdseye_observe())
 
                 # get target network values
                 next_max_q = sess.run([self.local_AC_predator.target_network.best_q],
-                                      feed_dict={self.local_AC_predator.target_network.inputs: current_screen_predator})
-                best_action, policy, policy_slow, value_predator = sess.run([self.local_AC_predator.target_network.best_action_index,
-                                                             self.local_AC_predator.target_network.policy,
-                                                             self.local_AC_predator.target_network.policy_slow,
-                                                             self.local_AC_predator.target_network.value], #todo
-                                               feed_dict={self.local_AC_predator.target_network.inputs: previous_screen_predator})
+                                      feed_dict={
+                                          self.local_AC_predator.target_network.inputs: [current_screen_predator]})
+                best_action, policy, policy_slow, value_predator = sess.run(
+                    [self.local_AC_predator.target_network.best_action_index,
+                     self.local_AC_predator.target_network.policy,
+                     self.local_AC_predator.target_network.policy_slow,
+                     self.local_AC_predator.target_network.value],  # todo
+                    feed_dict={self.local_AC_predator.target_network.inputs: previous_screen_predator})
 
                 # Store environment
                 for pred_index in range(self.number_of_predators):
@@ -444,18 +311,19 @@ class WorkerRPS:
                 previous_screen_predator = current_screen_predator
 
                 # Watch environment
-                #todo current_screen_prey, reward, terminal, terminal_each = self.env.prey_observe()
+                # todo current_screen_prey, reward, terminal, terminal_each = self.env.prey_observe()
                 _, current_screen_prey, _, reward = self.env.observe()
                 reward = [reward]
                 episode_reward_prey += np.sum(reward)
 
                 # get target network values
                 next_max_q_prey = sess.run([self.local_AC_prey.target_network.best_q],
-                    feed_dict={self.local_AC_prey.target_network.inputs: current_screen_prey})
-                best_action, policy, policy_slow, value_prey = sess.run([self.local_AC_prey.target_network.best_action_index,
-                                                             self.local_AC_prey.target_network.policy,
-                                                             self.local_AC_prey.target_network.policy_slow,
-                                                             self.local_AC_prey.target_network.value],
+                                           feed_dict={self.local_AC_prey.target_network.inputs: [current_screen_prey]})
+                best_action, policy, policy_slow, value_prey = sess.run(
+                    [self.local_AC_prey.target_network.best_action_index,
+                     self.local_AC_prey.target_network.policy,
+                     self.local_AC_prey.target_network.policy_slow,
+                     self.local_AC_prey.target_network.value],
                     feed_dict={self.local_AC_prey.target_network.inputs: previous_screen_prey})
 
                 # Store environment
@@ -499,19 +367,16 @@ class WorkerRPS:
 
             # Update the network using the experience buffer at the end of the episode.
             if self.predator_learning:
-                if len(episode_buffer_predator[0]) != 0:
-                    for pred_index in range(self.number_of_predators):
-                        v_l[pred_index], p_l[pred_index], e_l[pred_index], g_n[pred_index], v_n[pred_index] = \
-                            self.train(episode_buffer_predator[pred_index], sess, gamma, self.local_AC_predator)
+                for pred_index in range(self.number_of_predators):
+                    v_l[pred_index], p_l[pred_index], e_l[pred_index], g_n[pred_index], v_n[pred_index] = \
+                        self.train(episode_buffer_predator[pred_index], sess, gamma, self.local_AC_predator)
 
             # Update the network using the experience buffer at the end of the episode.
             if self.prey_learning:
                 for prey_index in range(self.number_of_prey):
-                    if len(episode_buffer_prey[prey_index]) != 0:
-                        # print(len(episode_buffer_prey[prey_index]), episode_buffer_prey[prey_index])
-                        v_l_prey[prey_index], p_l_prey[prey_index], e_l_prey[prey_index], g_n_prey[prey_index], \
-                        v_n_prey[prey_index] = \
-                            self.train(episode_buffer_prey[prey_index], sess, gamma, self.local_AC_prey)
+                    v_l_prey[prey_index], p_l_prey[prey_index], e_l_prey[prey_index], g_n_prey[prey_index], v_n_prey[
+                        prey_index] = \
+                        self.train(episode_buffer_prey[prey_index], sess, gamma, self.local_AC_prey)
 
             # Periodically save gifs of episodes, model parameters, and summary statistics.
             if episode_count % 5 == 0 and episode_count != 0:
@@ -520,10 +385,12 @@ class WorkerRPS:
                     if saver is not None:
                         saver.save(sess, self.model_path + '/model-' + str(episode_count) + '.cptk')
                         print("Saved Model")
-                    pol1, pol2, q1, q2 = sess.run([self.local_AC_predator.network.policy, self.local_AC_prey.network.policy,
-                                    self.local_AC_predator.network.value, self.local_AC_prey.network.value],
-                                   feed_dict={self.local_AC_predator.network.inputs: [[-1]*25], #todo [0]
-                                              self.local_AC_prey.network.inputs: [[-1]*25]}) #todo [0]
+
+                    pol1, pol2, q1, q2 = sess.run(
+                        [self.local_AC_predator.network.policy, self.local_AC_prey.network.policy,
+                         self.local_AC_predator.network.value, self.local_AC_prey.network.value],
+                        feed_dict={self.local_AC_predator.network.inputs: [[0]],
+                                   self.local_AC_prey.network.inputs: [[0]]})
                     self.policy_evolution.append([list(pol1[0]), list(pol2[0]), list(q1[0]), list(q2[0])])
                     print(self.policy_evolution[-1])
 
@@ -539,11 +406,13 @@ class WorkerRPS:
 
                     summary.value.add(tag='Perf/Length', simple_value=float(mean_length))  # avg episode length
 
-                    summary.value.add(tag='Perf/Reward Predator', simple_value=float(mean_reward_predator))  # avg reward
+                    summary.value.add(tag='Perf/Reward Predator',
+                                      simple_value=float(mean_reward_predator))  # avg reward
                     summary.value.add(tag='Perf/Value Predator',
                                       simple_value=float(mean_value_predator))  # avg episode value_predator
                     summary.value.add(tag='Losses/Value Loss Predator', simple_value=float(np.mean(v_l)))  # value_loss
-                    summary.value.add(tag='Losses/Policy Loss Predator', simple_value=float(np.mean(p_l)))  # policy_loss
+                    summary.value.add(tag='Losses/Policy Loss Predator',
+                                      simple_value=float(np.mean(p_l)))  # policy_loss
                     summary.value.add(tag='Losses/Entropy Predator', simple_value=float(np.mean(e_l)))  # entropy
                     summary.value.add(tag='Losses/Grad Norm Predator', simple_value=float(np.mean(g_n)))  # grad_norms
                     summary.value.add(tag='Losses/Var Norm Predator', simple_value=float(np.mean(v_n)))  # var_norms
@@ -552,34 +421,27 @@ class WorkerRPS:
                     summary.value.add(tag='Perf/Value Prey',
                                       simple_value=float(mean_value_prey))  # avg episode value_predator
                     summary.value.add(tag='Losses/Value Loss Prey', simple_value=float(np.mean(v_l_prey)))  # value_loss
-                    summary.value.add(tag='Losses/Policy Loss Prey', simple_value=float(np.mean(p_l_prey)))  # policy_loss
+                    summary.value.add(tag='Losses/Policy Loss Prey',
+                                      simple_value=float(np.mean(p_l_prey)))  # policy_loss
                     summary.value.add(tag='Losses/Entropy Prey', simple_value=float(np.mean(e_l_prey)))  # entropy
                     summary.value.add(tag='Losses/Grad Norm Prey', simple_value=float(np.mean(g_n_prey)))  # grad_norms
                     summary.value.add(tag='Losses/Var Norm Prey', simple_value=float(np.mean(v_n_prey)))  # var_norms
 
-                    summary.value.add(tag='Strategy/Prey', simple_value=float(action_distribution_prey[0][0]))  # var_norms
-                    #summary.value.add(tag='Strategy/Prey', simple_value=float(action_distribution_prey[0][1]))  # var_norms
-
+                    summary.value.add(tag='Strategy/Prey',
+                                      simple_value=float(action_distribution_prey[0][0]))  # var_norms
                     summary.value.add(tag='Strategy/Predator', simple_value=float(action_distribution_predator[0][0]))
-                    #summary.value.add(tag='Strategy/Predator', simple_value=float(action_distribution_predator[0][1]))
 
                     self.summary_writer.add_summary(summary, episode_count)
-
-                    #self.summary_writer.add_graph(sess.graph, global_step=episode_count)
                     self.summary_writer.flush()
-                    # exit()
 
             # Update episode count
             if self.is_chief:
                 glbl_epis = sess.run(self.increment)
-                #glbl_epis = sess.run(self.global_episodes)
+                # glbl_epis = sess.run(self.global_episodes)
                 if glbl_epis % 500 == 0:
-                    print("Global step @", glbl_epis,"*",batch_size)
+                    print("Global step @", glbl_epis, "*", batch_size)
 
-                if glbl_epis % (500/batch_size) == 0:
+                if glbl_epis % (500 / batch_size) == 0:
                     print("Copying on-line to target network")
                     sess.run([self.local_AC_predator.assign_op, self.local_AC_prey.assign_op])
             episode_count += 1
-
-            # if total_steps > 2500:
-            #    coord.request_stop()
